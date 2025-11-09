@@ -1,0 +1,83 @@
+name: Karachi AQI Daily CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+  schedule:
+    - cron: '0 3 * * *'  # Every day at 3 AM UTC (8 AM PKT)
+
+jobs:
+  run-aqi-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v3
+      with:
+        persist-credentials: true
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: 📦 Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: 🗂️ Step 1 — Fetch and Update Daily Data
+      run: |
+        echo "▶ Running update_daily_data.py..."
+        python src/update_daily_data.py || { echo "❌ Failed to update data"; exit 1; }
+
+    - name: 🧹 Step 2 — Preprocess Updated Data
+      run: |
+        echo "▶ Running preprocess_daily_data.py..."
+        python src/preprocess_daily_data.py || { echo "❌ Failed to preprocess"; exit 1; }
+
+    - name: 🧠 Step 3 — Train LSTM Model
+      run: |
+        echo "▶ Running lstm_model_training.py..."
+        python src/lstm_model_training.py || { echo "❌ Model training failed"; exit 1; }
+
+    - name: 🔮 Step 4 — Predict Next 3 Days AQI
+      run: |
+        echo "▶ Running predict.py..."
+        python src/predict.py || { echo "❌ Prediction failed"; exit 1; }
+
+    - name: 📊 Step 5 — Generate LIME Explanation
+      run: python src/create_lime.py
+
+    - name: Upload LIME outputs
+      uses: actions/upload-artifact@v4
+      with:
+        name: lime_explanations
+        path: lime_explanations/
+
+    - name: 🧪 Step 6 — Run UI Smoke Test
+      run: |
+        echo "▶ Testing Streamlit UI startup..."
+        nohup streamlit run app.py --server.headless true --server.port 8501 &
+        sleep 10
+        pkill streamlit
+        echo "✅ UI started and closed successfully"
+
+    - name: 📤 Commit Latest AQI Data & Predictions
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        git add -A
+        git commit -m "🔄 Auto: Daily data, prediction & LIME update" || echo "✅ No changes to commit"
+        git push || echo "⚠️ Nothing to push"
+
+    - name: Wait before triggering deploy
+      run: sleep 20
+
+    - name: 🚀 Trigger Render Deploy
+      run: |
+        curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
+        echo "✅ Render deployment triggered successfully"
